@@ -498,6 +498,26 @@ impl ExtensibleField<3> for BaseElement {
     }
 }
 
+impl ExtensibleField<4> for BaseElement {
+    fn mul(_a: [Self; 4], _b: [Self; 4]) -> [Self; 4] {
+        unimplemented!()
+    }
+
+    #[inline(always)]
+    fn mul_base(_a: [Self; 4], _b: Self) -> [Self; 4] {
+        unimplemented!()
+    }
+
+    #[inline(always)]
+    fn frobenius(_x: [Self; 4]) -> [Self; 4] {
+        unimplemented!()
+    }
+
+    fn is_supported() -> bool {
+        false
+    }
+}
+
 // TYPE CONVERSIONS
 // ================================================================================================
 

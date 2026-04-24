@@ -175,7 +175,7 @@ pub trait Air: Send + Sync {
     /// Base field for the computation described by this AIR. STARK protocol for this computation
     /// may be executed in the base field, or in an extension of the base fields as specified
     /// by [ProofOptions] struct.
-    type BaseField: StarkField + ExtensibleField<2> + ExtensibleField<3>;
+    type BaseField: StarkField + ExtensibleField<2> + ExtensibleField<3> + ExtensibleField<4>;
 
     /// A type defining shape of public inputs for the computation described by this protocol.
     /// This could be any type as long as it can be serialized into a sequence of field elements.
