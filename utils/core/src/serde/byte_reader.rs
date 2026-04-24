@@ -61,6 +61,19 @@ pub trait ByteReader {
     /// Returns true if there are more bytes left to be read from `self`.
     fn has_more_bytes(&self) -> bool;
 
+    /// Returns the number of bytes still available to read from `self`, or
+    /// `None` if the reader does not know (e.g. it wraps a streaming source
+    /// like `std::io::Read`).
+    ///
+    /// Used by the provided `read_many` implementation to bound
+    /// `Vec::with_capacity` against adversary-controlled length prefixes.
+    /// Default implementation returns `None` so existing out-of-tree
+    /// `ByteReader` impls keep compiling; in-tree readers that can answer
+    /// cheaply (e.g. `SliceReader`) override this to `Some(..)`.
+    fn remaining_bytes(&self) -> Option<usize> {
+        None
+    }
+
     // PROVIDED METHODS
     // --------------------------------------------------------------------------------------------
 
@@ -191,7 +204,22 @@ pub trait ByteReader {
         Self: Sized,
         D: Deserializable,
     {
-        let mut result = Vec::with_capacity(num_elements);
+        // Bound initial capacity by the number of bytes the reader knows it
+        // still holds, when it knows. A `Vec<u8>` with a `num_elements` prefix
+        // larger than the remaining source cannot actually be filled and will
+        // error out via `read_from` below; pre-allocating the full claim is
+        // the DoS vector. For types with larger-than-1-byte serialized size
+        // this over-reserves vs. the tight bound, but never beyond what the
+        // input could actually supply.
+        //
+        // Streaming readers (`remaining_bytes() == None`) keep the original
+        // behaviour: they don't know their remaining size, so the caller is
+        // trusted. That matches the pre-fix semantics for those readers.
+        let cap = match self.remaining_bytes() {
+            Some(remaining) => num_elements.min(remaining),
+            None => num_elements,
+        };
+        let mut result = Vec::with_capacity(cap);
         for _ in 0..num_elements {
             let element = D::read_from(self)?;
             result.push(element)
@@ -681,6 +709,10 @@ impl ByteReader for SliceReader<'_> {
 
     fn has_more_bytes(&self) -> bool {
         self.pos < self.source.len()
+    }
+
+    fn remaining_bytes(&self) -> Option<usize> {
+        Some(self.source.len().saturating_sub(self.pos))
     }
 }
 

@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp;
 
@@ -51,6 +52,11 @@ pub enum FieldExtension {
     Quadratic = 2,
     /// Composition polynomial is constructed in the cubic extension of the base field.
     Cubic = 3,
+    /// Composition polynomial is constructed in the quartic extension of the base field.
+    ///
+    /// Added in the Niek-Kamer/winterfell fork to support 31-bit STARK-friendly fields like
+    /// BabyBear, where a quartic extension is needed to reach 95+ bit conjectured soundness.
+    Quartic = 4,
 }
 
 /// STARK protocol parameters.
@@ -324,19 +330,90 @@ impl Deserializable for ProofOptions {
     /// Reads proof options from the specified `source` and returns the result.
     ///
     /// # Errors
-    /// Returns an error of a valid proof options could not be read from the specified `source`.
+    /// Returns an error of a valid proof options could not be read from the
+    /// specified `source`.
+    ///
+    /// Pre-validates every parameter against the bounds that `ProofOptions::new`
+    /// and `with_partitions` assert on, so adversary-controlled bytes can never
+    /// drive the constructors into a panic. Matches the wider "read_from must
+    /// not rely on constructor asserts" contract extended to `TraceInfo` and
+    /// friends.
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let num_queries = source.read_u8()? as usize;
+        let blowup_factor = source.read_u8()? as usize;
+        let grinding_factor = source.read_u8()? as u32;
+        let field_extension = FieldExtension::read_from(source)?;
+        let fri_folding_factor = source.read_u8()? as usize;
+        let fri_remainder_max_degree = source.read_u8()? as usize;
+        let batching_constraints = BatchingMethod::read_from(source)?;
+        let batching_deep = BatchingMethod::read_from(source)?;
+        let num_partitions = source.read_u8()? as usize;
+        let hash_rate = source.read_u8()? as usize;
+
+        // All of these mirror `ProofOptions::new` / `with_partitions` asserts.
+        if num_queries == 0 || num_queries > MAX_NUM_QUERIES {
+            return Err(DeserializationError::InvalidValue(format!(
+                "number of queries out of range: {num_queries}"
+            )));
+        }
+        if !blowup_factor.is_power_of_two()
+            || blowup_factor < MIN_BLOWUP_FACTOR
+            || blowup_factor > MAX_BLOWUP_FACTOR
+        {
+            return Err(DeserializationError::InvalidValue(format!(
+                "blowup factor out of range or not a power of two: {blowup_factor}"
+            )));
+        }
+        if grinding_factor > MAX_GRINDING_FACTOR {
+            return Err(DeserializationError::InvalidValue(format!(
+                "grinding factor out of range: {grinding_factor}"
+            )));
+        }
+        if !fri_folding_factor.is_power_of_two()
+            || fri_folding_factor < FRI_MIN_FOLDING_FACTOR
+            || fri_folding_factor > FRI_MAX_FOLDING_FACTOR
+        {
+            return Err(DeserializationError::InvalidValue(format!(
+                "FRI folding factor out of range or not a power of two: {fri_folding_factor}"
+            )));
+        }
+        // Guard the `(x + 1).is_power_of_two()` check against overflow on
+        // `x = usize::MAX`; `read_u8` already caps at 255 but this keeps the
+        // arithmetic robust if the byte width ever widens.
+        let remainder_plus_one = fri_remainder_max_degree
+            .checked_add(1)
+            .ok_or_else(|| {
+                DeserializationError::InvalidValue("FRI remainder degree overflow".to_string())
+            })?;
+        if !remainder_plus_one.is_power_of_two()
+            || fri_remainder_max_degree > FRI_MAX_REMAINDER_DEGREE
+        {
+            return Err(DeserializationError::InvalidValue(format!(
+                "FRI remainder max degree out of range or (x+1) not a power of two: {fri_remainder_max_degree}"
+            )));
+        }
+        if !(1..=16).contains(&num_partitions) {
+            return Err(DeserializationError::InvalidValue(format!(
+                "number of partitions out of range: {num_partitions}"
+            )));
+        }
+        if !(1..=256).contains(&hash_rate) {
+            return Err(DeserializationError::InvalidValue(format!(
+                "hash rate out of range: {hash_rate}"
+            )));
+        }
+
         let result = ProofOptions::new(
-            source.read_u8()? as usize,
-            source.read_u8()? as usize,
-            source.read_u8()? as u32,
-            FieldExtension::read_from(source)?,
-            source.read_u8()? as usize,
-            source.read_u8()? as usize,
-            BatchingMethod::read_from(source)?,
-            BatchingMethod::read_from(source)?,
+            num_queries,
+            blowup_factor,
+            grinding_factor,
+            field_extension,
+            fri_folding_factor,
+            fri_remainder_max_degree,
+            batching_constraints,
+            batching_deep,
         );
-        Ok(result.with_partitions(source.read_u8()? as usize, source.read_u8()? as usize))
+        Ok(result.with_partitions(num_partitions, hash_rate))
     }
 }
 
@@ -355,6 +432,7 @@ impl FieldExtension {
             Self::None => 1,
             Self::Quadratic => 2,
             Self::Cubic => 3,
+            Self::Quartic => 4,
         }
     }
 }
@@ -378,6 +456,7 @@ impl Deserializable for FieldExtension {
             1 => Ok(FieldExtension::None),
             2 => Ok(FieldExtension::Quadratic),
             3 => Ok(FieldExtension::Cubic),
+            4 => Ok(FieldExtension::Quartic),
             value => Err(DeserializationError::InvalidValue(format!(
                 "value {value} cannot be deserialized as FieldExtension enum"
             ))),
