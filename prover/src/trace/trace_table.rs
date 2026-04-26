@@ -196,7 +196,7 @@ impl<B: StarkField> TraceTable<B> {
     pub fn fragments(
         &mut self,
         fragment_length: usize,
-    ) -> alloc::vec::IntoIter<TraceTableFragment<B>> {
+    ) -> alloc::vec::IntoIter<TraceTableFragment<'_, B>> {
         self.build_fragments(fragment_length).into_iter()
     }
 
